@@ -9,11 +9,6 @@ from charts_explorer import (
     relation_builder_and_explorer,
 )
 
-from charts_explorer import (
-    draw_lifecycle_stacked_chart,
-    relation_builder_and_explorer,
-)
-
 
 st.set_page_config(
     page_title="Generic LC & Stock/LT/Price Dashboard",
@@ -28,6 +23,13 @@ def main():
         "You now have full control: separate engines, free choice of relations, "
         "and ad-hoc charts with counts and percentages on any dataset."
     )
+
+    # Global dataset registry: will hold LC, Stock and summaries
+    if "dataset_registry" not in st.session_state:
+        st.session_state["dataset_registry"] = {}
+    else:
+        # Clear and rebuild on each run; joined datasets are kept separately
+        st.session_state["dataset_registry"].clear()
 
     with st.sidebar:
         st.header("Upload input files")
@@ -74,6 +76,10 @@ def main():
             st.info("Upload the lifecycle/generic file in the sidebar.")
         else:
             st.write(f"**Lifecycle file shape:** {df_lc.shape[0]} rows × {df_lc.shape[1]} columns")
+
+            # Register LC input in the global registry
+            st.session_state["dataset_registry"]["LC: Input file"] = df_lc
+
             with st.expander("Preview lifecycle input (first 200 rows)", expanded=False):
                 st.dataframe(df_lc.head(200))
 
@@ -198,6 +204,18 @@ def main():
                 lc_results = None
 
             if lc_results is not None:
+                registry = st.session_state["dataset_registry"]
+                registry["LC: Genric summary"] = lc_results["genric_summary"]
+                if not lc_results["company_summary"].empty:
+                    registry["LC: Company summary"] = lc_results["company_summary"]
+                if not lc_results["location_summary"].empty:
+                    registry["LC: Location summary"] = lc_results["location_summary"]
+                if not lc_results["pkg_file_summary"].empty:
+                    registry["LC: Package summary (file-level)"] = lc_results["pkg_file_summary"]
+                if not lc_results["pkg_genric_summary"].empty:
+                    registry["LC: Package summary (Genric-level)"] = lc_results["pkg_genric_summary"]
+                registry["LC: Input with Genric annotations"] = lc_results["df_with_genric"]
+
                 genric_summary = lc_results["genric_summary"]
 
                 st.subheader("High-level metrics")
@@ -264,6 +282,10 @@ def main():
             st.info("Upload the stock/price file in the sidebar.")
         else:
             st.write(f"**Stock file shape:** {df_stock.shape[0]} rows × {df_stock.shape[1]} columns")
+
+            # Register Stock input
+            st.session_state["dataset_registry"]["Stock: Input file"] = df_stock
+
             with st.expander("Preview stock/price input (first 200 rows)", expanded=False):
                 st.dataframe(df_stock.head(200))
 
@@ -366,6 +388,14 @@ def main():
                 stock_results = None
 
             if stock_results is not None:
+                registry = st.session_state["dataset_registry"]
+                registry["Stock: Generic summary"] = stock_results["generic_summary"]
+                registry["Stock: Generic+Supplier summary"] = stock_results[
+                    "generic_supplier_summary"
+                ]
+                registry["Stock: Supplier summary"] = stock_results["supplier_summary"]
+                registry["Stock: Input with flags"] = stock_results["df_with_flags"]
+
                 generic_summary = stock_results["generic_summary"]
                 supplier_summary = stock_results["supplier_summary"]
                 meta_df = stock_results["meta"]
@@ -442,12 +472,7 @@ def main():
 
     # -------- Relations & Explorer tab --------
     with tabs[2]:
-        relation_builder_and_explorer(
-            df_lc=df_lc,
-            lc_results=lc_results,
-            df_stock=df_stock,
-            stock_results=stock_results,
-        )
+        relation_builder_and_explorer()
 
     # -------- Help tab --------
     with tabs[3]:
