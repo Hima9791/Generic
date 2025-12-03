@@ -969,12 +969,24 @@ def draw_adhoc_chart(df: pd.DataFrame, dataset_label: str):
 
     agg_mode = st.selectbox(
         "Aggregation function",
-        ["Count rows", "Sum", "Mean", "Median"],
+        [
+            "Count rows",
+            "Count distinct of column",
+            "Sum",
+            "Mean",
+            "Median",
+        ],
         key=f"{dataset_label}_agg",
     )
 
     metric_col = None
-    if agg_mode != "Count rows":
+    if agg_mode == "Count distinct of column":
+        metric_col = st.selectbox(
+            "Column to count distinct values",
+            cols,
+            key=f"{dataset_label}_distinct_metric",
+        )
+    elif agg_mode != "Count rows":
         if not num_options:
             st.warning("No numeric columns available for aggregation; falling back to row count.")
             agg_mode = "Count rows"
@@ -1002,6 +1014,12 @@ def draw_adhoc_chart(df: pd.DataFrame, dataset_label: str):
 
     if agg_mode == "Count rows":
         agg_df = g.groupby(group_cols, dropna=False).size().reset_index(name="value")
+    elif agg_mode == "Count distinct of column":
+        agg_df = (
+            g.groupby(group_cols, dropna=False)[metric_col]
+            .nunique(dropna=True)
+            .reset_index(name="value")
+        )
     else:
         func_map = {"Sum": "sum", "Mean": "mean", "Median": "median"}
         agg_func = func_map[agg_mode]
@@ -1028,7 +1046,19 @@ def draw_adhoc_chart(df: pd.DataFrame, dataset_label: str):
         st.info("No data left after aggregation and Top-N filtering.")
         return
 
-    chart = alt.Chart(agg_df).mark_bar()
+    chart_type = st.selectbox(
+        "Chart type",
+        ["Bar", "Line", "Area", "Scatter"],
+        key=f"{dataset_label}_chart_type",
+    )
+
+    mark_map = {
+        "Bar": alt.Chart(agg_df).mark_bar(),
+        "Line": alt.Chart(agg_df).mark_line(point=True),
+        "Area": alt.Chart(agg_df).mark_area(),
+        "Scatter": alt.Chart(agg_df).mark_circle(size=60),
+    }
+    chart = mark_map.get(chart_type, alt.Chart(agg_df).mark_bar())
 
     enc_kwargs = {
         "x": alt.X(f"{gb1}:N", sort="-y"),
