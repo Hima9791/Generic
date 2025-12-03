@@ -8,6 +8,9 @@ import altair as alt
 # - Re-implements and extends your two Python scripts as an app
 # - Fully column-agnostic via UI mapping (no renaming needed)
 # - Dynamic counts, tables, and charts driven by your selections
+# - NEW:
+#   * Ad-hoc Explorer now shows % of total and % within group
+#   * You can create joins/relations between any two tables
 # ============================================================
 
 st.set_page_config(
@@ -716,6 +719,8 @@ def calc_supplier_summary_price(
     rows = []
     for sup, g in group:
         n_rows = len(g)
+        n_generics = g[genric_col].n
+
         n_generics = g[genric_col].nunique(dropna=True)
 
         g_stock = g[g["_has_stock"]]
@@ -1052,6 +1057,35 @@ def draw_adhoc_chart(df: pd.DataFrame, dataset_label: str):
         key=f"{dataset_label}_chart_type",
     )
 
+    # Percentages toggles
+    show_pct_total = st.checkbox(
+        "Add % of grand total",
+        value=True,
+        key=f"{dataset_label}_pct_total",
+    )
+    show_pct_group = st.checkbox(
+        f"Add % within primary group ({gb1})",
+        value=True,
+        key=f"{dataset_label}_pct_group",
+    )
+
+    # Compute percentages
+    grand_total = agg_df["value"].sum()
+    if pd.notna(grand_total) and grand_total != 0:
+        agg_df["Pct_of_total"] = (agg_df["value"] / grand_total * 100).round(2)
+
+    pct_group_col_name = None
+    if use_second:
+        group_total = agg_df.groupby(gb1)["value"].transform("sum")
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pct_vals = np.where(
+                group_total != 0,
+                (agg_df["value"] / group_total * 100).round(2),
+                np.nan,
+            )
+        pct_group_col_name = f"Pct_within_{gb1}"
+        agg_df[pct_group_col_name] = pct_vals
+
     mark_map = {
         "Bar": alt.Chart(agg_df).mark_bar(),
         "Line": alt.Chart(agg_df).mark_line(point=True),
@@ -1060,19 +1094,27 @@ def draw_adhoc_chart(df: pd.DataFrame, dataset_label: str):
     }
     chart = mark_map.get(chart_type, alt.Chart(agg_df).mark_bar())
 
+    # Tooltips with percentages
+    tooltip_cols = [gb1, "value"]
+    if use_second:
+        tooltip_cols.append(gb2)
+    if show_pct_total and "Pct_of_total" in agg_df.columns:
+        tooltip_cols.append("Pct_of_total")
+    if show_pct_group and pct_group_col_name and pct_group_col_name in agg_df.columns:
+        tooltip_cols.append(pct_group_col_name)
+
     enc_kwargs = {
         "x": alt.X(f"{gb1}:N", sort="-y"),
         "y": alt.Y("value:Q"),
-        "tooltip": [gb1, "value"],
+        "tooltip": tooltip_cols,
     }
     if use_second:
         enc_kwargs["color"] = alt.Color(f"{gb2}:N")
-        enc_kwargs["tooltip"].append(gb2)
 
     chart = chart.encode(**enc_kwargs).properties(title=f"{agg_mode} of selected metric")
 
     st.altair_chart(chart, use_container_width=True)
-    st.caption("Aggregated data used for the chart:")
+    st.caption("Aggregated data used for the chart (including counts and percentages):")
     st.dataframe(agg_df)
 
 
@@ -1086,6 +1128,10 @@ def main():
         "Map the columns once via the UI, then explore dynamic counts and charts "
         "per Generic, Supplier, Package, Country, or any other dimension."
     )
+
+    # Storage for user-defined joined tables (relations)
+    if "joined_datasets" not in st.session_state:
+        st.session_state["joined_datasets"] = {}
 
     with st.sidebar:
         st.header("1. Upload input files")
@@ -1118,7 +1164,6 @@ def main():
         [
             "Lifecycle / LC (Script 1)",
             "Stock / LT / Price (Script 2)",
-            "Relate files (join)",
             "Ad-hoc Explorer",
             "Help",
         ]
@@ -1542,86 +1587,6 @@ def main():
 
     # ---------------- Ad-hoc Explorer tab ----------------
     with tabs[2]:
-        st.header("Relate the lifecycle and stock files (flexible join)")
-
-        if df_lc is None or df_stock is None:
-            st.info(
-                "Upload **both** files in the sidebar so you can join them. "
-                "You can then pick any columns to relate the datasets."
-            )
-        else:
-            left_cols = list(df_lc.columns)
-            right_cols = list(df_stock.columns)
-
-            st.markdown(
-                "Choose how the two files relate to each other. "
-                "The join is completely flexible – pick any columns, set the join type, "
-                "and preview the result."
-            )
-
-            jc1, jc2, jc3 = st.columns([1.5, 1.5, 1])
-
-            left_guess = guess_column(
-                df_lc,
-                ["Genric", "Generic", "Family", "Primary Key", "PK"],
-            ) or left_cols[0]
-            right_guess = guess_column(
-                df_stock,
-                ["Genric", "Generic", "Family", "Primary Key", "PK"],
-            ) or right_cols[0]
-
-            left_key = jc1.selectbox(
-                "Lifecycle / LC file key column",
-                left_cols,
-                index=left_cols.index(left_guess),
-            )
-            right_key = jc2.selectbox(
-                "Stock / LT / Price file key column",
-                right_cols,
-                index=right_cols.index(right_guess),
-            )
-
-            join_type = jc3.selectbox(
-                "Join type",
-                ["inner", "left", "right", "outer"],
-                help="Choose how strictly to match rows across the two files.",
-            )
-
-            st.divider()
-
-            merged = df_lc.merge(
-                df_stock,
-                left_on=left_key,
-                right_on=right_key,
-                how=join_type,
-                suffixes=("_LC", "_Stock"),
-            )
-
-            left_keys = set(df_lc[left_key].dropna().astype(str))
-            right_keys = set(df_stock[right_key].dropna().astype(str))
-            matched_keys = left_keys & right_keys
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Left rows (LC)", len(df_lc))
-            m2.metric("Right rows (Stock)", len(df_stock))
-            m3.metric("Matched keys", len(matched_keys))
-            m4.metric(
-                "Unmatched keys",
-                f"LC: {len(left_keys - right_keys)} | Stock: {len(right_keys - left_keys)}",
-            )
-
-            st.subheader("Joined preview")
-            st.dataframe(merged.head(200))
-
-            st.download_button(
-                label="Download full joined table (CSV)",
-                data=merged.to_csv(index=False).encode("utf-8"),
-                file_name="joined_lifecycle_stock.csv",
-                mime="text/csv",
-            )
-
-    # ---------------- Ad-hoc Explorer tab ----------------
-    with tabs[3]:
         st.header("Ad-hoc Explorer (build any chart from any table)")
 
         datasets: dict[str, pd.DataFrame] = {}
@@ -1665,17 +1630,91 @@ def main():
             except NameError:
                 pass
 
+        # Add any user-defined joined datasets (relations) from previous interactions
+        joined_datasets = st.session_state.get("joined_datasets", {})
+        for name, jdf in joined_datasets.items():
+            datasets[name] = jdf
+
         if not datasets:
             st.info(
                 "Upload at least one file and build the base summaries in the first two tabs "
                 "to unlock the ad-hoc explorer."
             )
         else:
+            if len(datasets) >= 2:
+                with st.expander("Create relation / join two tables", expanded=False):
+                    ds_names = list(datasets.keys())
+                    left_name = st.selectbox(
+                        "Left table",
+                        ds_names,
+                        key="join_left_table",
+                    )
+                    right_name = st.selectbox(
+                        "Right table",
+                        ds_names,
+                        key="join_right_table",
+                    )
+
+                    if left_name == right_name:
+                        st.info("Choose two different tables to join.")
+                    else:
+                        left_cols = list(datasets[left_name].columns)
+                        right_cols = list(datasets[right_name].columns)
+
+                        left_keys = st.multiselect(
+                            "Left key column(s)",
+                            left_cols,
+                            default=[],
+                            key="join_left_keys",
+                        )
+                        right_keys = st.multiselect(
+                            "Right key column(s) (same length & order as left)",
+                            right_cols,
+                            default=[],
+                            key="join_right_keys",
+                        )
+                        join_type = st.selectbox(
+                            "Join type",
+                            ["inner", "left", "right", "outer"],
+                            key="join_type",
+                        )
+                        default_label = f"Join: {left_name} × {right_name}"
+                        join_label = st.text_input(
+                            "Name of joined dataset",
+                            value=default_label,
+                            key="join_label",
+                        )
+
+                        if st.button("Create joined dataset", key="join_button"):
+                            if not left_keys or not right_keys:
+                                st.error("Please select at least one key column on both sides.")
+                            elif len(left_keys) != len(right_keys):
+                                st.error("Number of left and right key columns must match.")
+                            else:
+                                try:
+                                    join_df = datasets[left_name].merge(
+                                        datasets[right_name],
+                                        left_on=left_keys,
+                                        right_on=right_keys,
+                                        how=join_type,
+                                        suffixes=("_left", "_right"),
+                                    )
+                                    # Save into session_state so it persists across reruns,
+                                    # and into the local datasets dict so it is immediately usable.
+                                    st.session_state["joined_datasets"][join_label] = join_df
+                                    datasets[join_label] = join_df
+                                    st.success(
+                                        f"Joined dataset '{join_label}' created "
+                                        f"({join_df.shape[0]} rows × {join_df.shape[1]} columns)."
+                                    )
+                                except Exception as e:
+                                    st.error(f"Join failed: {e}")
+
             ds_name = st.selectbox("Choose dataset", list(datasets.keys()))
             draw_adhoc_chart(datasets[ds_name], ds_name)
 
     # ---------------- Help tab ----------------
-    with tabs[4]:
+    with tabs[3]:
         st.header("How to use this app")
 
         st.markdown(
@@ -1692,12 +1731,13 @@ def main():
 3. After mapping:
    - The **Lifecycle tab** builds generic/company/package/location summaries and a stacked LC chart.
    - The **Stock tab** builds generic/supplier summaries, supply concentration flags, and price/lead-time insights.
-   - The **Relate files** tab lets you join the two uploads on any columns (inner/left/right/outer) and download the result.
 
 4. In the **Ad-hoc Explorer**:
-   - Pick *any* table (raw input, generic summary, supplier summary, etc.).
+   - Pick *any* table (raw input, generic summary, supplier summary, joined relation, etc.).
    - Choose how to group (1 or 2 dimensions), pick the aggregation (Count / Sum / Mean / Median),
-     and instantly get a chart + aggregated table.
+     and instantly get a chart + aggregated table with **counts and % of total / within group**.
+   - Optionally, create **relations / joins** between any two tables (e.g. LC summary × Stock summary)
+     and then build charts on top of the joined dataset.
 
 You can put this file on GitHub as `app.py` and run it on Streamlit Cloud.
 Just make sure your `requirements.txt` includes at least:
