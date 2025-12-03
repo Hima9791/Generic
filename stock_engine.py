@@ -1,5 +1,5 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
 
 from utils import safe_numeric
 
@@ -26,117 +26,81 @@ def calc_generic_summary_price(
 
     group = df.groupby(genric_col, dropna=False)
 
-    rows = []
-    for genric, g in group:
-        n_rows = len(g)
-        n_suppliers = g[supplier_col].nunique(dropna=True)
+    base = pd.DataFrame(
+        {
+            "Genric_rows": group.size(),
+            "Genric_n_suppliers": group[supplier_col].nunique(dropna=True),
+        }
+    )
 
-        g_stock = g[g["_has_stock"]]
-        total_stock = g_stock["_qty_num"].sum()
-        stock_rows = g_stock.shape[0]
-        stock_rows_ratio = stock_rows / n_rows if n_rows else np.nan
+    stock_group = df.loc[df["_has_stock"]].groupby(genric_col, dropna=False)
+    base["Genric_total_stock"] = stock_group["_qty_num"].sum()
+    base["Genric_stock_rows"] = stock_group.size()
+    base["Genric_stock_rows_ratio"] = base["Genric_stock_rows"] / base[
+        "Genric_rows"
+    ]
 
-        g_price_valid = g[g["_minp_num"] > 0]
-        if not g_price_valid.empty:
-            min_minPrice = g_price_valid["_minp_num"].min()
-            med_minPrice = g_price_valid["_minp_num"].median()
-            max_minPrice = g_price_valid["_minp_num"].max()
-            med_avgPrice = g_price_valid["_avgp_num"].median()
-        else:
-            min_minPrice = med_minPrice = max_minPrice = med_avgPrice = np.nan
+    price_valid = df[df["_minp_num"] > 0].groupby(genric_col, dropna=False)
+    base["Genric_min_minPrice"] = price_valid["_minp_num"].min()
+    base["Genric_med_minPrice"] = price_valid["_minp_num"].median()
+    base["Genric_max_minPrice"] = price_valid["_minp_num"].max()
+    base["Genric_med_avgPrice"] = price_valid["_avgp_num"].median()
 
-        if pd.notna(min_minPrice) and pd.notna(max_minPrice) and min_minPrice > 0:
-            price_spread_ratio = max_minPrice / min_minPrice
-        else:
-            price_spread_ratio = np.nan
+    lt_group = df.groupby(genric_col, dropna=False)
+    base["Genric_min_MinLT_Week"] = lt_group["_minlt_num"].min()
+    base["Genric_med_MinLT_Week"] = lt_group["_minlt_num"].median()
+    base["Genric_max_MaxLT_Week"] = lt_group["_maxlt_num"].max()
 
-        g_lt_min_valid = g[~g["_minlt_num"].isna()]
-        g_lt_max_valid = g[~g["_maxlt_num"].isna()]
-        min_MinLT = g_lt_min_valid["_minlt_num"].min() if not g_lt_min_valid.empty else np.nan
-        med_MinLT = g_lt_min_valid["_minlt_num"].median() if not g_lt_min_valid.empty else np.nan
-        max_MaxLT = g_lt_max_valid["_maxlt_num"].max() if not g_lt_max_valid.empty else np.nan
+    base["Genric_total_stock"] = base["Genric_total_stock"].fillna(0).astype(float)
+    base["Genric_stock_rows"] = base["Genric_stock_rows"].fillna(0).astype(int)
+    base["Genric_stock_rows_ratio"] = base["Genric_stock_rows_ratio"]
+    base["Genric_price_spread_ratio"] = base["Genric_max_minPrice"] / base[
+        "Genric_min_minPrice"
+    ]
+    base["Genric_LT_span_weeks"] = (
+        base["Genric_max_MaxLT_Week"] - base["Genric_min_MinLT_Week"]
+    )
 
-        if pd.notna(min_MinLT) and pd.notna(max_MaxLT):
-            lt_span = max_MaxLT - min_MinLT
-        else:
-            lt_span = np.nan
+    generic_summary = base.reset_index().rename(columns={genric_col: genric_col})
 
-        rows.append(
-            {
-                genric_col: genric,
-                "Genric_rows": n_rows,
-                "Genric_n_suppliers": n_suppliers,
-                "Genric_total_stock": float(total_stock),
-                "Genric_stock_rows": stock_rows,
-                "Genric_stock_rows_ratio": stock_rows_ratio,
-                "Genric_min_minPrice": min_minPrice,
-                "Genric_med_minPrice": med_minPrice,
-                "Genric_max_minPrice": max_minPrice,
-                "Genric_med_avgPrice": med_avgPrice,
-                "Genric_min_MinLT_Week": min_MinLT,
-                "Genric_med_MinLT_Week": med_MinLT,
-                "Genric_max_MaxLT_Week": max_MaxLT,
-                "Genric_LT_span_weeks": lt_span,
-                "Genric_price_spread_ratio": price_spread_ratio,
-            }
-        )
-
-    generic_summary = pd.DataFrame(rows)
-
-    # Stock buckets (quantile-based)
     pos_stock = generic_summary["Genric_total_stock"] > 0
     if pos_stock.any():
         q1 = generic_summary.loc[pos_stock, "Genric_total_stock"].quantile(0.33)
         q2 = generic_summary.loc[pos_stock, "Genric_total_stock"].quantile(0.66)
-
-        def stock_bucket(row):
-            if row["Genric_total_stock"] <= 0:
-                return "NO_STOCK"
-            if row["Genric_total_stock"] <= q1:
-                return "LOW_STOCK"
-            if row["Genric_total_stock"] <= q2:
-                return "MEDIUM_STOCK"
-            return "HIGH_STOCK"
+        generic_summary["Genric_stock_bucket"] = np.select(
+            [~pos_stock, generic_summary["Genric_total_stock"] <= q1, generic_summary["Genric_total_stock"] <= q2],
+            ["NO_STOCK", "LOW_STOCK", "MEDIUM_STOCK"],
+            default="HIGH_STOCK",
+        )
     else:
+        generic_summary["Genric_stock_bucket"] = "NO_STOCK"
 
-        def stock_bucket(row):  # type: ignore[no-redef]
-            return "NO_STOCK"
+    generic_summary["Genric_price_spread_flag"] = pd.Series(
+        np.select(
+            [
+                generic_summary["Genric_price_spread_ratio"].isna(),
+                generic_summary["Genric_price_spread_ratio"] > 1000,
+                generic_summary["Genric_price_spread_ratio"] > 100,
+                generic_summary["Genric_price_spread_ratio"] > 10,
+            ],
+            ["NO_PRICE_DATA", "SPREAD>1000x", "SPREAD>100x", "SPREAD>10x"],
+            default="SPREAD_NORMAL",
+        )
+    )
 
-    generic_summary["Genric_stock_bucket"] = generic_summary.apply(stock_bucket, axis=1)
-
-    # Price spread flags
-    def price_spread_flag(v):
-        if pd.isna(v):
-            return "NO_PRICE_DATA"
-        if v > 1000:
-            return "SPREAD>1000x"
-        if v > 100:
-            return "SPREAD>100x"
-        if v > 10:
-            return "SPREAD>10x"
-        return "SPREAD_NORMAL"
-
-    generic_summary["Genric_price_spread_flag"] = generic_summary[
-        "Genric_price_spread_ratio"
-    ].apply(price_spread_flag)
-
-    # LT span flag
-    def lt_span_flag(v):
-        if pd.isna(v):
-            return "NO_LT_DATA"
-        if v >= 52:
-            return "SPAN>=52w"
-        if v >= 26:
-            return "SPAN>=26w"
-        if v >= 8:
-            return "SPAN>=8w"
-        if v > 0:
-            return "SPAN>0w"
-        return "SPAN_ZERO"
-
-    generic_summary["Genric_LT_span_flag"] = generic_summary[
-        "Genric_LT_span_weeks"
-    ].apply(lt_span_flag)
+    generic_summary["Genric_LT_span_flag"] = pd.Series(
+        np.select(
+            [
+                generic_summary["Genric_LT_span_weeks"].isna(),
+                generic_summary["Genric_LT_span_weeks"] >= 52,
+                generic_summary["Genric_LT_span_weeks"] >= 26,
+                generic_summary["Genric_LT_span_weeks"] >= 8,
+                generic_summary["Genric_LT_span_weeks"] > 0,
+            ],
+            ["NO_LT_DATA", "SPAN>=52w", "SPAN>=26w", "SPAN>=8w", "SPAN>0w"],
+            default="SPAN_ZERO",
+        )
+    )
 
     return generic_summary
 
@@ -161,46 +125,32 @@ def calc_generic_supplier_summary_price(
     df["_minlt_num"] = safe_numeric(df[minlt_col])
     df["_maxlt_num"] = safe_numeric(df[maxlt_col])
 
-    group = df.groupby([genric_col, supplier_col], dropna=False)
+    keys = [genric_col, supplier_col]
+    group = df.groupby(keys, dropna=False)
 
-    rows = []
-    for (genric, sup), g in group:
-        n_rows = len(g)
-        g_stock = g[g["_has_stock"]]
-        total_stock = g_stock["_qty_num"].sum()
-        stock_rows = g_stock.shape[0]
+    base = pd.DataFrame(
+        {
+            "GS_rows": group.size(),
+            "GS_stock_rows": df.loc[df["_has_stock"]].groupby(keys, dropna=False).size(),
+            "GS_total_stock": df.loc[df["_has_stock"]]
+            .groupby(keys, dropna=False)["_qty_num"]
+            .sum(),
+        }
+    )
 
-        g_price_valid = g[g["_minp_num"] > 0]
-        if not g_price_valid.empty:
-            min_minPrice = g_price_valid["_minp_num"].min()
-            med_minPrice = g_price_valid["_minp_num"].median()
-            med_avgPrice = g_price_valid["_avgp_num"].median()
-        else:
-            min_minPrice = med_minPrice = med_avgPrice = np.nan
+    price_valid = df[df["_minp_num"] > 0].groupby(keys, dropna=False)
+    base["GS_min_minPrice"] = price_valid["_minp_num"].min()
+    base["GS_med_minPrice"] = price_valid["_minp_num"].median()
+    base["GS_med_avgPrice"] = price_valid["_avgp_num"].median()
 
-        g_lt_min_valid = g[~g["_minlt_num"].isna()]
-        g_lt_max_valid = g[~g["_maxlt_num"].isna()]
-        min_MinLT = g_lt_min_valid["_minlt_num"].min() if not g_lt_min_valid.empty else np.nan
-        med_MinLT = g_lt_min_valid["_minlt_num"].median() if not g_lt_min_valid.empty else np.nan
-        max_MaxLT = g_lt_max_valid["_maxlt_num"].max() if not g_lt_max_valid.empty else np.nan
+    base["GS_min_MinLT_Week"] = group["_minlt_num"].min()
+    base["GS_med_MinLT_Week"] = group["_minlt_num"].median()
+    base["GS_max_MaxLT_Week"] = group["_maxlt_num"].max()
 
-        rows.append(
-            {
-                genric_col: genric,
-                supplier_col: sup,
-                "GS_rows": n_rows,
-                "GS_stock_rows": stock_rows,
-                "GS_total_stock": float(total_stock),
-                "GS_min_minPrice": min_minPrice,
-                "GS_med_minPrice": med_minPrice,
-                "GS_med_avgPrice": med_avgPrice,
-                "GS_min_MinLT_Week": min_MinLT,
-                "GS_med_MinLT_Week": med_MinLT,
-                "GS_max_MaxLT_Week": max_MaxLT,
-            }
-        )
+    base["GS_total_stock"] = base["GS_total_stock"].fillna(0).astype(float)
+    base["GS_stock_rows"] = base["GS_stock_rows"].fillna(0).astype(int)
 
-    return pd.DataFrame(rows)
+    return base.reset_index()
 
 
 def add_supply_concentration_price(
@@ -293,43 +243,31 @@ def calc_supplier_summary_price(
 
     group = df.groupby(supplier_col, dropna=False)
 
-    rows = []
-    for sup, g in group:
-        n_rows = len(g)
-        n_generics = g[genric_col].nunique(dropna=True)
+    base = pd.DataFrame(
+        {
+            "Supplier_rows": group.size(),
+            "Supplier_n_generics": group[genric_col].nunique(dropna=True),
+        }
+    )
 
-        g_stock = g[g["_has_stock"]]
-        total_stock = g_stock["_qty_num"].sum()
-        stock_rows = g_stock.shape[0]
-        stock_rows_ratio = stock_rows / n_rows if n_rows else np.nan
+    stock_group = df.loc[df["_has_stock"]].groupby(supplier_col, dropna=False)
+    base["Supplier_total_stock"] = stock_group["_qty_num"].sum()
+    base["Supplier_stock_rows"] = stock_group.size()
+    base["Supplier_stock_rows_ratio"] = base["Supplier_stock_rows"] / base[
+        "Supplier_rows"
+    ]
 
-        g_price_valid = g[g["_minp_num"] > 0]
-        if not g_price_valid.empty:
-            med_minPrice = g_price_valid["_minp_num"].median()
-            med_avgPrice = g_price_valid["_avgp_num"].median()
-        else:
-            med_minPrice = med_avgPrice = np.nan
+    price_valid = df[df["_minp_num"] > 0].groupby(supplier_col, dropna=False)
+    base["Supplier_med_minPrice"] = price_valid["_minp_num"].median()
+    base["Supplier_med_avgPrice"] = price_valid["_avgp_num"].median()
 
-        g_lt_min_valid = g[~g["_minlt_num"].isna()]
-        min_MinLT = g_lt_min_valid["_minlt_num"].min() if not g_lt_min_valid.empty else np.nan
-        med_MinLT = g_lt_min_valid["_minlt_num"].median() if not g_lt_min_valid.empty else np.nan
+    base["Supplier_min_MinLT_Week"] = group["_minlt_num"].min()
+    base["Supplier_med_MinLT_Week"] = group["_minlt_num"].median()
 
-        rows.append(
-            {
-                supplier_col: sup,
-                "Supplier_rows": n_rows,
-                "Supplier_n_generics": n_generics,
-                "Supplier_total_stock": float(total_stock),
-                "Supplier_stock_rows": stock_rows,
-                "Supplier_stock_rows_ratio": stock_rows_ratio,
-                "Supplier_med_minPrice": med_minPrice,
-                "Supplier_med_avgPrice": med_avgPrice,
-                "Supplier_min_MinLT_Week": min_MinLT,
-                "Supplier_med_MinLT_Week": med_MinLT,
-            }
-        )
+    base["Supplier_total_stock"] = base["Supplier_total_stock"].fillna(0).astype(float)
+    base["Supplier_stock_rows"] = base["Supplier_stock_rows"].fillna(0).astype(int)
 
-    return pd.DataFrame(rows)
+    return base.reset_index()
 
 
 def build_stock_summaries(df: pd.DataFrame, cfg: dict) -> dict:
