@@ -1,3 +1,5 @@
+# charts_explorer.py
+
 import numpy as np
 import pandas as pd
 import altair as alt
@@ -226,59 +228,32 @@ def draw_adhoc_chart(df: pd.DataFrame, dataset_label: str):
     st.dataframe(agg_df)
 
 
-def relation_builder_and_explorer(
-    df_lc,
-    lc_results,
-    df_stock,
-    stock_results,
-):
+def relation_builder_and_explorer():
     """
-    Full control over RELATIONS (joins) + charts.
-
-    - You choose left table, right table.
-    - You choose key columns on each side.
-    - You choose join type (inner/left/right/outer).
-    - Joined dataset gets stored and is available for ad-hoc charts.
+    FULLY DYNAMIC:
+    - Pulls all datasets from st.session_state["dataset_registry"]
+    - Adds all joined datasets from st.session_state["joined_datasets"]
+    - Lets you join anything with anything, then chart on any result.
     """
     st.header("Relations & Ad-hoc Explorer")
 
+    # Global registry of datasets (LC, Stock, any summaries you register in app.py)
+    registry = st.session_state.get("dataset_registry", {})
     if "joined_datasets" not in st.session_state:
         st.session_state["joined_datasets"] = {}
 
+    # Combine base datasets + joined datasets
     datasets: dict[str, pd.DataFrame] = {}
-
-    # Base datasets
-    if df_lc is not None:
-        datasets["LC: Input file"] = df_lc
-        if lc_results is not None:
-            datasets["LC: Genric summary"] = lc_results["genric_summary"]
-            if not lc_results["company_summary"].empty:
-                datasets["LC: Company summary"] = lc_results["company_summary"]
-            if not lc_results["location_summary"].empty:
-                datasets["LC: Location summary"] = lc_results["location_summary"]
-            if not lc_results["pkg_file_summary"].empty:
-                datasets["LC: Package summary (file-level)"] = lc_results["pkg_file_summary"]
-            if not lc_results["pkg_genric_summary"].empty:
-                datasets["LC: Package summary (Genric-level)"] = lc_results["pkg_genric_summary"]
-            datasets["LC: Input with Genric annotations"] = lc_results["df_with_genric"]
-
-    if df_stock is not None:
-        datasets["Stock: Input file"] = df_stock
-        if stock_results is not None:
-            datasets["Stock: Generic summary"] = stock_results["generic_summary"]
-            datasets["Stock: Generic+Supplier summary"] = stock_results["generic_supplier_summary"]
-            datasets["Stock: Supplier summary"] = stock_results["supplier_summary"]
-            datasets["Stock: Input with flags"] = stock_results["df_with_flags"]
-
-    # User-defined joined datasets
+    for name, df in registry.items():
+        datasets[name] = df
     for name, jdf in st.session_state["joined_datasets"].items():
         datasets[name] = jdf
 
     if not datasets:
-        st.info("No datasets yet. Build LC/Stock summaries first in the other tabs.")
+        st.info("No datasets registered yet. Build LC / Stock summaries first.")
         return
 
-    # ===== RELATION BUILDER (FULL CONTROL) =====
+    # ===== RELATION BUILDER =====
     with st.expander("Create / manage relations (joins)", expanded=True):
         ds_names = list(datasets.keys())
         left_name = st.selectbox("Left table", ds_names, key="join_left_table")
@@ -316,7 +291,7 @@ def relation_builder_and_explorer(
                 key="join_label",
             )
 
-            c1, c2 = st.columns([1, 1])
+            c1, c2 = st.columns(2)
             with c1:
                 if st.button("Create / update joined dataset", key="join_button"):
                     if not left_keys or not right_keys:
@@ -333,7 +308,6 @@ def relation_builder_and_explorer(
                                 suffixes=("_L", "_R"),
                             )
                             st.session_state["joined_datasets"][join_label] = join_df
-                            datasets[join_label] = join_df
                             st.success(
                                 f"Joined dataset '{join_label}' created "
                                 f"({join_df.shape[0]} rows × {join_df.shape[1]} columns)."
@@ -344,10 +318,15 @@ def relation_builder_and_explorer(
             with c2:
                 if st.button("Clear all joined datasets", key="clear_joins"):
                     st.session_state["joined_datasets"] = {}
-                    st.success("All joined datasets cleared (you can recreate them).")
+                    st.success("All joined datasets cleared.")
 
     # ===== AD-HOC CHART EXPLORER =====
     st.markdown("---")
-    st.subheader("Ad-hoc charts on any dataset (including your relations)")
-    ds_name = st.selectbox("Dataset for chart", list(datasets.keys()), key="explorer_ds")
+    st.subheader("Ad-hoc charts on any dataset (LC, Stock, or joined)")
+
+    ds_name = st.selectbox(
+        "Dataset for chart",
+        list(datasets.keys()),
+        key="explorer_ds",
+    )
     draw_adhoc_chart(datasets[ds_name], ds_name)
