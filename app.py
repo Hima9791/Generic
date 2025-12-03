@@ -1118,6 +1118,7 @@ def main():
         [
             "Lifecycle / LC (Script 1)",
             "Stock / LT / Price (Script 2)",
+            "Relate files (join)",
             "Ad-hoc Explorer",
             "Help",
         ]
@@ -1541,6 +1542,86 @@ def main():
 
     # ---------------- Ad-hoc Explorer tab ----------------
     with tabs[2]:
+        st.header("Relate the lifecycle and stock files (flexible join)")
+
+        if df_lc is None or df_stock is None:
+            st.info(
+                "Upload **both** files in the sidebar so you can join them. "
+                "You can then pick any columns to relate the datasets."
+            )
+        else:
+            left_cols = list(df_lc.columns)
+            right_cols = list(df_stock.columns)
+
+            st.markdown(
+                "Choose how the two files relate to each other. "
+                "The join is completely flexible – pick any columns, set the join type, "
+                "and preview the result."
+            )
+
+            jc1, jc2, jc3 = st.columns([1.5, 1.5, 1])
+
+            left_guess = guess_column(
+                df_lc,
+                ["Genric", "Generic", "Family", "Primary Key", "PK"],
+            ) or left_cols[0]
+            right_guess = guess_column(
+                df_stock,
+                ["Genric", "Generic", "Family", "Primary Key", "PK"],
+            ) or right_cols[0]
+
+            left_key = jc1.selectbox(
+                "Lifecycle / LC file key column",
+                left_cols,
+                index=left_cols.index(left_guess),
+            )
+            right_key = jc2.selectbox(
+                "Stock / LT / Price file key column",
+                right_cols,
+                index=right_cols.index(right_guess),
+            )
+
+            join_type = jc3.selectbox(
+                "Join type",
+                ["inner", "left", "right", "outer"],
+                help="Choose how strictly to match rows across the two files.",
+            )
+
+            st.divider()
+
+            merged = df_lc.merge(
+                df_stock,
+                left_on=left_key,
+                right_on=right_key,
+                how=join_type,
+                suffixes=("_LC", "_Stock"),
+            )
+
+            left_keys = set(df_lc[left_key].dropna().astype(str))
+            right_keys = set(df_stock[right_key].dropna().astype(str))
+            matched_keys = left_keys & right_keys
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Left rows (LC)", len(df_lc))
+            m2.metric("Right rows (Stock)", len(df_stock))
+            m3.metric("Matched keys", len(matched_keys))
+            m4.metric(
+                "Unmatched keys",
+                f"LC: {len(left_keys - right_keys)} | Stock: {len(right_keys - left_keys)}",
+            )
+
+            st.subheader("Joined preview")
+            st.dataframe(merged.head(200))
+
+            st.download_button(
+                label="Download full joined table (CSV)",
+                data=merged.to_csv(index=False).encode("utf-8"),
+                file_name="joined_lifecycle_stock.csv",
+                mime="text/csv",
+            )
+
+    # ---------------- Ad-hoc Explorer tab ----------------
+    with tabs[3]:
         st.header("Ad-hoc Explorer (build any chart from any table)")
 
         datasets: dict[str, pd.DataFrame] = {}
@@ -1594,7 +1675,7 @@ def main():
             draw_adhoc_chart(datasets[ds_name], ds_name)
 
     # ---------------- Help tab ----------------
-    with tabs[3]:
+    with tabs[4]:
         st.header("How to use this app")
 
         st.markdown(
@@ -1611,6 +1692,7 @@ def main():
 3. After mapping:
    - The **Lifecycle tab** builds generic/company/package/location summaries and a stacked LC chart.
    - The **Stock tab** builds generic/supplier summaries, supply concentration flags, and price/lead-time insights.
+   - The **Relate files** tab lets you join the two uploads on any columns (inner/left/right/outer) and download the result.
 
 4. In the **Ad-hoc Explorer**:
    - Pick *any* table (raw input, generic summary, supplier summary, etc.).
