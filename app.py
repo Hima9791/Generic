@@ -9,6 +9,11 @@ from charts_explorer import (
     relation_builder_and_explorer,
 )
 
+from charts_explorer import (
+    draw_lifecycle_stacked_chart,
+    relation_builder_and_explorer,
+)
+
 
 st.set_page_config(
     page_title="Generic LC & Stock/LT/Price Dashboard",
